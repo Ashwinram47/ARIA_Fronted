@@ -23,6 +23,8 @@ def check_asset(asset):
             "status": "Blocked", "reason": "Category A punch item is open",
             "action": "Construction must close the Category A punch item before handover"}
     
+    #category b -> verification required
+
     if gaps:
         return {"tag": asset["tag"], "asset_type": asset["asset_type"], "system": asset["system"],
             "status": "Not Ready", "reason": ", ".join(gaps),
@@ -39,6 +41,8 @@ def print_result(result):
     print(f"Reason : {result['reason']}")
     print(f"Action : {result['action']}")
     print("=" * 50)
+
+    # does AI even need to be used? perhaps have 2 programs with deterministic programming vs AI
 
 for asset in assets:
     result = check_asset(asset)
