@@ -3,11 +3,17 @@
 # explain.py
 import os
 import requests
+import logging
 from typing import Dict, Tuple
 from models import SubmissionOutput
 
+#Simple logging for LLM debugging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Environment variable name for Google API key
 GOOGLE_API_KEY_ENV = "GOOGLE_API_KEY"
+GGL_BASE = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"
 
 # Fallback actions when LLM fails
 FALLBACK_ACTIONS = {
@@ -15,9 +21,6 @@ FALLBACK_ACTIONS = {
     "BLOCKED": "Construction must close the punch item before handover",
     "READY": "Asset can proceed to handover review",
 }
-
-# Google Generative Language endpoint for text-bison (uses API key in query param)
-GGL_BASE = "https://generativelanguage.googleapis.com/v1beta2/models/text-bison-001:generate"
 
 def _compute_status_and_reason(d: Dict) -> Tuple[str, str]:
     required_flags = ["pid", "datasheet", "certificate", "sap"]
@@ -56,11 +59,7 @@ def _build_prompt(d: Dict) -> str:
         "If documents are missing, indicate the responsible team. Be concise."
     )
 
-def _call_google_bison(prompt: str, max_output_tokens: int = 60, timeout: int = 10) -> str:
-    """
-    Call Google Generative Language (text-bison) using an API key stored in env var.
-    Returns the generated text (first candidate) or raises an exception on failure.
-    """
+def _call_gemini(prompt: str, max_output_tokens: int = 60, timeout: int = 10) -> str:
     api_key = os.getenv(GOOGLE_API_KEY_ENV)
     if not api_key:
         raise RuntimeError(f"Google API key not found in env var {GOOGLE_API_KEY_ENV}")
@@ -72,15 +71,27 @@ def _call_google_bison(prompt: str, max_output_tokens: int = 60, timeout: int = 
         "temperature": 0.0,
     }
     headers = {"Content-Type": "application/json"}
+    logger.info("Calling Gemini endpoint: %s", url)
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
 
-    # Parse response: candidates[0].output is the usual field
+    # Helpful logging for debugging
+    logger.info("HTTP status: %s", resp.status_code)
+    if resp.status_code != 200:
+        logger.error("API error: %s", resp.text)
+        resp.raise_for_status()
+
+    data = resp.json()
+    logger.debug("API response JSON: %s", data)
+
+    # Typical field: candidates[0].output
     candidates = data.get("candidates") or []
     if not candidates:
-        # Some responses may use different shapes; try other keys defensively
-        raise ValueError("No candidates returned from Google API")
+        # Some responses may include 'output' directly or other shapes
+        output = data.get("output") or data.get("candidates", [{}])[0].get("output", "")
+        if not output:
+            raise ValueError("No text candidate returned from Gemini")
+        return output.strip()
+
     output = candidates[0].get("output") or ""
     return output.strip()
 
@@ -95,12 +106,13 @@ def explain_evaluation(evaluation_dict: Dict) -> SubmissionOutput:
     # Build prompt and call the API
     prompt = _build_prompt(evaluation_dict)
     try:
-        action_text = _call_google_bison(prompt, max_output_tokens=60)
+        action_text = _call_gemini(prompt, max_output_tokens=60)
         # Keep only the first line/sentence to be safe
         action = action_text.splitlines()[0].strip()
         if not action:
             raise ValueError("Empty action from API")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Gemini API failed or returned no action: %s", exc)
         action = FALLBACK_ACTIONS.get(status, FALLBACK_ACTIONS["NOT READY"])
 
     return SubmissionOutput(asset=asset, status=status, reason=reason, action=action)
